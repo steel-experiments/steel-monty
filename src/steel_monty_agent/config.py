@@ -5,6 +5,50 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _parse_dotenv(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if not line or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        elif value.startswith("'") and value.endswith("'"):
+            value = value[1:-1]
+
+        values[key] = value
+
+    return values
+
+
+def _load_dotenv_fallback(env: dict[str, str]) -> dict[str, str]:
+    file_env = _parse_dotenv(Path(".env"))
+    merged = dict(file_env)
+    for key, value in env.items():
+        if key not in merged or not merged.get(key):
+            if value:
+                merged[key] = value
+    return merged
+
+
 def _env_bool(value: str | None, default: bool) -> bool:
     if value is None:
         return default
@@ -56,7 +100,7 @@ class Settings:
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "Settings":
-        resolved_env = env if env is not None else dict(os.environ)
+        resolved_env = _load_dotenv_fallback(dict(os.environ) if env is None else env)
 
         api_key = resolved_env.get("ANTHROPIC_API_KEY", "").strip()
         if not api_key:

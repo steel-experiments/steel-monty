@@ -353,6 +353,9 @@ class SteelSDKBrowser:
     def get_url(self) -> str:
         return self._require_page().url
 
+    def get_title(self) -> str:
+        return self._require_page().title()
+
     def eval_js(self, script: str) -> str:
         result = self._require_page().evaluate(script)
         if isinstance(result, str):

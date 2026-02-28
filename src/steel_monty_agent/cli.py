@@ -5,6 +5,7 @@ import json
 import sys
 
 from .config import Settings
+from .observability import configure_logfire
 from .orchestrator import Orchestrator
 
 
@@ -48,6 +49,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
+    configure_logfire()
+
     objective = " ".join(args.objective).strip()
     if not objective:
         print("Objective must not be empty.", file=sys.stderr)

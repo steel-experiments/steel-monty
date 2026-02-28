@@ -21,6 +21,44 @@ export ANTHROPIC_API_KEY=...
 export STEEL_API_KEY=...
 ```
 
+### Logfire Setup (`stell-monty`)
+
+1. Install the SDK:
+
+```bash
+uv add logfire
+```
+
+2. Authenticate your local environment:
+
+```bash
+uv run logfire auth
+```
+
+Credentials are stored in `~/.logfire/default.toml`.
+
+3. Set the Logfire project from this repo directory:
+
+```bash
+uv run logfire projects use stell-monty
+```
+
+This creates `.logfire/` in the working directory and stores the project token locally.
+No `LOGFIRE_TOKEN` env var is required when using this flow.
+
+Config priority: `.env` first, then environment variables only for missing keys.
+
+If a key is set in both places, `.env` is used.
+
+Run-time logs:
+
+- `Attempt X/Y...` shows overall progress.
+- `LLM response done in ...` shows model call time.
+- `Steel session ready in ...` shows session connect time.
+- `Code execution done in ...` shows generated code runtime.
+- Timings are also written into each attempt artifact as `artifacts.timings`.
+- Logfire is configured automatically at CLI startup (`logfire.configure(...)`).
+
 Optional runtime configuration:
 
 ```bash
@@ -36,6 +74,15 @@ export STEEL_MONTY_API_URL=
 ```bash
 uv run steel-monty-agent "Open example.com and return the page title."
 ```
+
+## Object API Shape
+
+Generated Monty code now uses an object-shaped browser surface:
+
+- Top-level helpers: `start_browser(...)`, `emit_result(payload)`
+- Browser methods: `open_page(url)`, `current_page()`, `close()`
+- Page methods: `goto(url)`, `url()`, `title()`, `snapshot()`, `locator(selector)`, `eval_js(script)`, `screenshot()`
+- Locator methods: `click()`, `fill(value)`, `text()`, `attr(name)`, `wait_visible()`
 
 Artifacts are written under `artifacts/runs/<run_id>/`.
 

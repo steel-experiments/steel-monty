@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,26 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+_ACTIVE_BRIDGES: dict[int, "BrowserBridge"] = {}
+
+
+def _register_bridge(bridge: "BrowserBridge") -> int:
+    bridge_id = id(bridge)
+    _ACTIVE_BRIDGES[bridge_id] = bridge
+    return bridge_id
+
+
+def _unregister_bridge(bridge_id: int) -> None:
+    _ACTIVE_BRIDGES.pop(bridge_id, None)
+
+
+def _get_bridge(bridge_id: int) -> "BrowserBridge":
+    bridge = _ACTIVE_BRIDGES.get(bridge_id)
+    if bridge is None:
+        raise RuntimeError("Browser handle is no longer active.")
+    return bridge
+
+
 @dataclass
 class BridgeEvent:
     ts: str
@@ -22,6 +43,94 @@ class BridgeEvent:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass
+class Locator:
+    bridge_id: int
+    selector: str
+
+    def click(self) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).click(self.selector)
+
+    def fill(self, value: str) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).fill(self.selector, value)
+
+    def text(self) -> str:
+        return _get_bridge(self.bridge_id).get_text(self.selector)
+
+    def attr(self, attr: str) -> str:
+        return _get_bridge(self.bridge_id).get_attr(self.selector, attr)
+
+    def wait_visible(self) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).wait_for(selector=self.selector)
+
+
+@dataclass
+class Page:
+    bridge_id: int
+
+    def goto(self, url: str) -> None:
+        _get_bridge(self.bridge_id).open_url(url)
+
+    def url(self) -> str:
+        return _get_bridge(self.bridge_id).get_url()
+
+    def title(self) -> str:
+        return _get_bridge(self.bridge_id).get_title()
+
+    def snapshot(self, interactive: bool = True) -> str:
+        return _get_bridge(self.bridge_id).snapshot(interactive=interactive)
+
+    def locator(self, selector: str) -> Locator:
+        return Locator(bridge_id=self.bridge_id, selector=selector)
+
+    def click(self, selector: str) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).click(selector)
+
+    def fill(self, selector: str, value: str) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).fill(selector, value)
+
+    def text(self, selector: str) -> str:
+        return _get_bridge(self.bridge_id).get_text(selector)
+
+    def attr(self, selector: str, attr: str) -> str:
+        return _get_bridge(self.bridge_id).get_attr(selector, attr)
+
+    def wait_for_text(self, text: str) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).wait_for(text=text)
+
+    def wait_for_selector(self, selector: str) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).wait_for(selector=selector)
+
+    def wait_for_ms(self, ms: int) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).wait_for(ms=ms)
+
+    def eval_js(self, script: str) -> str:
+        return _get_bridge(self.bridge_id).eval_js(script)
+
+    def screenshot(self, path: str | None = None) -> str:
+        return _get_bridge(self.bridge_id).screenshot(path=path)
+
+
+@dataclass
+class Browser:
+    bridge_id: int
+    session_id: str
+    mode: str
+    name: str | None = None
+    connect_url: str | None = None
+    live_url: str | None = None
+
+    def open_page(self, url: str) -> Page:
+        _get_bridge(self.bridge_id).open_url(url)
+        return Page(bridge_id=self.bridge_id)
+
+    def current_page(self) -> Page:
+        return Page(bridge_id=self.bridge_id)
+
+    def close(self) -> dict[str, Any]:
+        return _get_bridge(self.bridge_id).stop_browser()
 
 
 @dataclass
@@ -87,12 +196,14 @@ class BrowserBridge:
     def last_observation(self) -> str | None:
         return self._last_observation
 
-    def start_session(
+    def start_browser(
         self,
         session_name: str | None = None,
         local: bool | None = None,
         api_url: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Browser:
+        print("Starting Steel session...", flush=True)
+        started = time.perf_counter()
         if session_name is not None:
             self.backend.session_name = session_name
         if local is not None and local != self.backend.local:
@@ -101,20 +212,39 @@ class BrowserBridge:
             self.backend.api_url = api_url or None
 
         info: SessionInfo = self.backend.start_session()
+        elapsed = time.perf_counter() - started
+        print(f"Steel session ready in {elapsed:.2f}s (id: {info.id})", flush=True)
         self._session_started = True
-        payload = asdict(info)
-        self._record("start_session", {"session_name": self.backend.session_name}, json.dumps(payload))
-        return payload
 
-    def stop_session(self) -> dict[str, Any]:
+        bridge_id = _register_bridge(self)
+        payload = asdict(info)
+        self._record(
+            "start_browser",
+            {"session_name": self.backend.session_name, "bridge_id": bridge_id},
+            json.dumps(payload),
+        )
+        return Browser(
+            bridge_id=bridge_id,
+            session_id=info.id,
+            mode=info.mode,
+            name=info.name,
+            connect_url=info.connect_url,
+            live_url=info.live_url,
+        )
+
+    def stop_browser(self) -> dict[str, Any]:
+        _unregister_bridge(id(self))
         if not self._session_started:
-            self._record("stop_session", {"skipped": True}, "session_not_started")
+            self._record("stop_browser", {"skipped": True}, "session_not_started")
             return {"ok": True, "stopped": False}
 
         output = self.backend.stop_session(all_sessions=False)
         self._session_started = False
-        self._record("stop_session", {"skipped": False}, output)
+        self._record("stop_browser", {"skipped": False}, output)
         return {"ok": True, "stopped": True, "output": output}
+
+    def stop_session(self) -> dict[str, Any]:
+        return self.stop_browser()
 
     def open_url(self, url: str) -> dict[str, Any]:
         output = self.backend.open_url(url)
@@ -169,6 +299,11 @@ class BrowserBridge:
         self._record("get_url", {}, output)
         return output
 
+    def get_title(self) -> str:
+        output = self.backend.get_title()
+        self._record("get_title", {}, output)
+        return output
+
     def eval_js(self, script: str) -> str:
         output = self.backend.eval_js(script)
         self._record("eval_js", {"script": script}, output)
@@ -195,19 +330,8 @@ class BrowserBridge:
 
     def external_functions(self) -> dict[str, Any]:
         return {
-            "start_session": self.start_session,
-            "open_url": self.open_url,
-            "snapshot": self.snapshot,
-            "click": self.click,
-            "fill": self.fill,
-            "wait_for": self.wait_for,
-            "get_text": self.get_text,
-            "get_attr": self.get_attr,
-            "get_url": self.get_url,
-            "eval_js": self.eval_js,
-            "screenshot": self.screenshot,
+            "start_browser": self.start_browser,
             "emit_result": self.emit_result,
-            "stop_session": self.stop_session,
         }
 
     def dump_events(self, path: Path) -> None:

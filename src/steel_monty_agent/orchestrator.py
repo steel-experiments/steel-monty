@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import logfire
 
 from .browser_bridge import BrowserBridge
 from .config import Settings
@@ -20,6 +23,14 @@ def _run_id() -> str:
 
 
 class Orchestrator:
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        return f"{seconds:.2f}s"
+
+    @staticmethod
+    def _round_timings(timings: dict[str, float]) -> dict[str, float]:
+        return {k: round(v, 3) for k, v in timings.items()}
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.generator = AnthropicCodeGenerator(
@@ -48,11 +59,26 @@ class Orchestrator:
             updated = replace(updated, steel_api_url=normalized_api_url)
         return Orchestrator(updated)
 
+    @staticmethod
+    def _attach_timings(payload: dict[str, Any], timings: dict[str, float]) -> None:
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            payload["artifacts"] = artifacts
+        artifacts["timings"] = Orchestrator._round_timings(dict(timings))
+
     def run(self, objective: str, session_name: str | None = None) -> OrchestrationResult:
         if not objective.strip():
             raise ValueError("Objective must not be empty.")
 
         run_id = _run_id()
+        logfire.info(
+            "Run started",
+            run_id=run_id,
+            objective=objective,
+            max_attempts=self.settings.max_attempts,
+            steel_local=self.settings.steel_local,
+        )
         run_dir = self.settings.artifacts_root / run_id
         run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -62,6 +88,7 @@ class Orchestrator:
         final_result: dict[str, Any] | None = None
 
         for attempt in range(1, self.settings.max_attempts + 1):
+            attempt_started = time.perf_counter()
             attempt_dir = run_dir / f"attempt_{attempt:02d}"
             attempt_dir.mkdir(parents=True, exist_ok=False)
 
@@ -76,84 +103,149 @@ class Orchestrator:
             bridge: BrowserBridge | None = None
             error_text: str | None = None
             success = False
+            timings: dict[str, float] = {}
 
-            try:
-                generated = self.generator.generate_program(
-                    objective=objective,
-                    attempt=attempt,
-                    previous_error=previous_error,
-                    previous_observation=previous_observation,
-                )
-                prompt_path.write_text(generated.prompt + "\n", encoding="utf-8")
-                response_path.write_text(generated.raw_response + "\n", encoding="utf-8")
-                program_path.write_text(generated.code + "\n", encoding="utf-8")
+            print(f"\nAttempt {attempt}/{self.settings.max_attempts}...", flush=True)
+            with logfire.span(
+                "Attempt",
+                run_id=run_id,
+                attempt=attempt,
+                session_name=attempt_session_name,
+            ):
+                try:
+                    print("1/3 LLM: generating plan...", flush=True)
+                    llm_started = time.perf_counter()
+                    generated = self.generator.generate_program(
+                        objective=objective,
+                        attempt=attempt,
+                        previous_error=previous_error,
+                        previous_observation=previous_observation,
+                    )
+                    timings["llm_response_sec"] = time.perf_counter() - llm_started
+                    print(f"LLM response done in {self._fmt_duration(timings['llm_response_sec'])}", flush=True)
+                    logfire.info(
+                        "LLM response complete",
+                        run_id=run_id,
+                        attempt=attempt,
+                        llm_response_sec=timings["llm_response_sec"],
+                    )
 
-                backend = SteelSDKBrowser(
-                    session_name=attempt_session_name,
-                    steel_api_key=self.settings.steel_api_key,
-                    local=self.settings.steel_local,
-                    api_url=self.settings.steel_api_url,
-                    timeout_sec=self.settings.browser_timeout_sec,
-                )
-                bridge = BrowserBridge(backend=backend, run_dir=attempt_dir)
+                    prompt_path.write_text(generated.prompt + "\n", encoding="utf-8")
+                    response_path.write_text(generated.raw_response + "\n", encoding="utf-8")
+                    program_path.write_text(generated.code + "\n", encoding="utf-8")
 
-                self.policy.validate(generated.code)
-                monty_return = self.monty.run(
-                    source_code=generated.code,
-                    external_functions=bridge.external_functions(),
-                )
+                    print("2/3 Policy: validating generated code...", flush=True)
+                    policy_started = time.perf_counter()
+                    backend = SteelSDKBrowser(
+                        session_name=attempt_session_name,
+                        steel_api_key=self.settings.steel_api_key,
+                        local=self.settings.steel_local,
+                        api_url=self.settings.steel_api_url,
+                        timeout_sec=self.settings.browser_timeout_sec,
+                    )
+                    bridge = BrowserBridge(backend=backend, run_dir=attempt_dir)
 
-                payload = bridge.final_result or self._normalize_result_payload(monty_return)
-                payload["artifacts"].setdefault("attempt", attempt)
-                payload["artifacts"].setdefault("run_id", run_id)
-                payload["artifacts"].setdefault("attempt_dir", str(attempt_dir))
+                    self.policy.validate(generated.code)
+                    timings["policy_validation_sec"] = time.perf_counter() - policy_started
+                    print(
+                        f"Policy check done in {self._fmt_duration(timings['policy_validation_sec'])}",
+                        flush=True,
+                    )
+                    logfire.info(
+                        "Policy validation complete",
+                        run_id=run_id,
+                        attempt=attempt,
+                        policy_validation_sec=timings["policy_validation_sec"],
+                    )
 
-                result_path.write_text(
-                    json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n",
-                    encoding="utf-8",
-                )
-                final_result = payload
-                success = True
-            except Exception as exc:
-                error_text = f"{type(exc).__name__}: {exc}"
-                error_path.write_text(error_text + "\n", encoding="utf-8")
-                previous_error = error_text
-                previous_observation = bridge.last_observation() if bridge else None
+                    print("3/3 Execution: running generated code...", flush=True)
+                    exec_started = time.perf_counter()
+                    monty_return = self.monty.run(
+                        source_code=generated.code,
+                        external_functions=bridge.external_functions(),
+                    )
+                    timings["code_execution_sec"] = time.perf_counter() - exec_started
+                    print(
+                        f"Code execution done in {self._fmt_duration(timings['code_execution_sec'])}",
+                        flush=True,
+                    )
+                    logfire.info(
+                        "Code execution complete",
+                        run_id=run_id,
+                        attempt=attempt,
+                        code_execution_sec=timings["code_execution_sec"],
+                    )
 
-                failure_payload = self._failure_payload(
-                    error_text=error_text,
-                    run_id=run_id,
-                    attempt=attempt,
-                    attempt_dir=attempt_dir,
-                )
-                result_path.write_text(
-                    json.dumps(failure_payload, indent=2, ensure_ascii=True, default=str)
-                    + "\n",
-                    encoding="utf-8",
-                )
-                final_result = failure_payload
-            finally:
-                if bridge is not None:
-                    try:
-                        bridge.stop_session()
-                    except Exception as stop_exc:
-                        stop_error = f"Session cleanup error: {type(stop_exc).__name__}: {stop_exc}"
-                        (attempt_dir / "stop_error.txt").write_text(
-                            stop_error + "\n", encoding="utf-8"
-                        )
-                        if not error_text:
-                            error_text = stop_error
-                        if success and final_result is not None:
-                            errors = final_result.get("errors")
-                            if isinstance(errors, list):
-                                errors.append(stop_error)
-                            else:
-                                final_result["errors"] = [stop_error]
-                        if not error_path.exists():
-                            error_path.write_text(stop_error + "\n", encoding="utf-8")
-                    bridge.dump_events(events_path)
-                else:
-                    events_path.write_text("[]\n", encoding="utf-8")
+                    payload = bridge.final_result or self._normalize_result_payload(monty_return)
+                    payload["artifacts"].setdefault("attempt", attempt)
+                    payload["artifacts"].setdefault("run_id", run_id)
+                    payload["artifacts"].setdefault("attempt_dir", str(attempt_dir))
+                    self._attach_timings(payload, timings)
+
+                    result_path.write_text(
+                        json.dumps(payload, indent=2, ensure_ascii=True, default=str) + "\n",
+                        encoding="utf-8",
+                    )
+                    final_result = payload
+                    success = True
+                except Exception as exc:
+                    error_text = f"{type(exc).__name__}: {exc}"
+                    print(f"Attempt failed: {error_text}", flush=True)
+                    logfire.error(
+                        "Attempt failed",
+                        run_id=run_id,
+                        attempt=attempt,
+                        error=error_text,
+                    )
+                    error_path.write_text(error_text + "\n", encoding="utf-8")
+                    previous_error = error_text
+                    previous_observation = bridge.last_observation() if bridge else None
+
+                    timings["attempt_failed_after_sec"] = time.perf_counter() - attempt_started
+                    failure_payload = self._failure_payload(
+                        error_text=error_text,
+                        run_id=run_id,
+                        attempt=attempt,
+                        attempt_dir=attempt_dir,
+                    )
+                    self._attach_timings(failure_payload, timings)
+                    result_path.write_text(
+                        json.dumps(failure_payload, indent=2, ensure_ascii=True, default=str)
+                        + "\n",
+                        encoding="utf-8",
+                    )
+                    final_result = failure_payload
+                finally:
+                    timings["attempt_total_sec"] = time.perf_counter() - attempt_started
+                    if final_result is not None:
+                        self._attach_timings(final_result, timings)
+                    if bridge is not None:
+                        try:
+                            bridge.stop_session()
+                        except Exception as stop_exc:
+                            stop_error = f"Session cleanup error: {type(stop_exc).__name__}: {stop_exc}"
+                            (attempt_dir / "stop_error.txt").write_text(
+                                stop_error + "\n", encoding="utf-8"
+                            )
+                            if not error_text:
+                                error_text = stop_error
+                            if success and final_result is not None:
+                                errors = final_result.get("errors")
+                                if isinstance(errors, list):
+                                    errors.append(stop_error)
+                                else:
+                                    final_result["errors"] = [stop_error]
+                            if not error_path.exists():
+                                error_path.write_text(stop_error + "\n", encoding="utf-8")
+                            logfire.error(
+                                "Session cleanup error",
+                                run_id=run_id,
+                                attempt=attempt,
+                                error=stop_error,
+                            )
+                        bridge.dump_events(events_path)
+                    else:
+                        events_path.write_text("[]\n", encoding="utf-8")
 
             attempts.append(
                 AttemptRecord(
@@ -171,6 +263,16 @@ class Orchestrator:
             )
 
             if success:
+                print(
+                    f"Attempt {attempt} complete in {self._fmt_duration(timings['attempt_total_sec'])}",
+                    flush=True,
+                )
+                logfire.info(
+                    "Attempt succeeded",
+                    run_id=run_id,
+                    attempt=attempt,
+                    attempt_total_sec=timings["attempt_total_sec"],
+                )
                 result = OrchestrationResult(
                     run_id=run_id,
                     objective=objective,
@@ -182,6 +284,17 @@ class Orchestrator:
                 self._write_summary(run_dir, result)
                 return result
 
+            print(
+                f"Attempt {attempt} failed after {self._fmt_duration(timings['attempt_total_sec'])}",
+                flush=True,
+            )
+            logfire.info(
+                "Attempt finished with failure",
+                run_id=run_id,
+                attempt=attempt,
+                attempt_total_sec=timings["attempt_total_sec"],
+            )
+
         result = OrchestrationResult(
             run_id=run_id,
             objective=objective,
@@ -191,6 +304,7 @@ class Orchestrator:
             attempts=attempts,
         )
         self._write_summary(run_dir, result)
+        logfire.info("Run finished", run_id=run_id, success=result.success)
         return result
 
     @staticmethod

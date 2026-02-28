@@ -13,19 +13,8 @@ class ScriptPolicy:
     max_ast_nodes: int = 700
     helper_calls: set[str] = field(
         default_factory=lambda: {
-            "start_session",
-            "open_url",
-            "snapshot",
-            "click",
-            "fill",
-            "wait_for",
-            "get_text",
-            "get_attr",
-            "get_url",
-            "eval_js",
-            "screenshot",
+            "start_browser",
             "emit_result",
-            "stop_session",
         }
     )
     safe_builtins: set[str] = field(

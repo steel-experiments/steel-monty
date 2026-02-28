@@ -16,20 +16,37 @@ Runtime constraints:
 - Do not use eval/exec/open/compile/__import__.
 - Keep code short and deterministic.
 
-You can only call these helper functions:
-- start_session(session_name=None, local=False, api_url=None)
-- open_url(url)
-- snapshot(interactive=True)
-- click(target)
-- fill(target, value)
-- wait_for(text=None, selector=None, ms=None)
-- get_text(target)
-- get_attr(target, attr)
-- get_url()
-- eval_js(script)
-- screenshot(path=None)
+You can only call these top-level helper functions:
+- start_browser(session_name=None, local=False, api_url=None)
 - emit_result(payload)
-- stop_session()
+
+`start_browser(...)` returns a Browser object with methods:
+- browser.open_page(url) -> Page
+- browser.current_page() -> Page
+- browser.close()
+
+Page methods:
+- page.goto(url)
+- page.url()
+- page.title()
+- page.snapshot(interactive=True)
+- page.locator(selector) -> Locator
+- page.click(selector)
+- page.fill(selector, value)
+- page.text(selector)
+- page.attr(selector, attr)
+- page.wait_for_text(text)
+- page.wait_for_selector(selector)
+- page.wait_for_ms(ms)
+- page.eval_js(script)
+- page.screenshot(path=None)
+
+Locator methods:
+- locator.click()
+- locator.fill(value)
+- locator.text()
+- locator.attr(attr)
+- locator.wait_visible()
 
 Required output behavior:
 - Always call emit_result(payload) with a dict payload.
@@ -37,8 +54,8 @@ Required output behavior:
 - Use status="ok" unless the task clearly failed.
 
 Selector strategy:
-- Prefer snapshot(interactive=True) first.
-- Use stable targets from the snapshot output.
+- Prefer page.snapshot(interactive=True) first.
+- Use stable CSS selectors.
 - Keep actions minimal and goal-focused.
 """
 
@@ -58,9 +75,9 @@ def build_generation_prompt(
         f"Attempt number: {attempt}",
         (
             "Execution requirements:\n"
-            "- Start a browser session early.\n"
+            "- Start a browser early with start_browser(...).\n"
             "- Perform only needed actions.\n"
-            "- Call stop_session() before finishing.\n"
+            "- Close the browser with browser.close() before finishing.\n"
             "- Call emit_result(payload) at the end."
         ),
     ]
