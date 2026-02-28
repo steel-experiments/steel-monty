@@ -90,7 +90,7 @@ sequenceDiagram
     alt policy pass
         O->>M: run(code, external_functions)
         M->>B: call helper functions
-        B->>S: start_session/open/snapshot/click...
+        B->>S: start_session/open_url/snapshot/click...
         S-->>B: action results
         B-->>M: helper return values
         M-->>O: execution result
@@ -152,19 +152,34 @@ stateDiagram-v2
 
 ## Helper API Surface (Exposed to Monty)
 
-- `start_session(session_name=None, local=False, api_url=None)`
-- `open_url(url)`
+- Top-level helpers:
+- `start_browser(session_name=None, local=False, api_url=None)`
+- `emit_result(payload)`
+- Browser object methods:
+- `open_page(url)`
+- `current_page()`
+- `close()`
+- Page object methods:
+- `goto(url)`
+- `url()`
+- `title()`
 - `snapshot(interactive=True)`
-- `click(target)`
-- `fill(target, value)`
-- `wait_for(text=None, selector=None, ms=None)`
-- `get_text(target)`
-- `get_attr(target, attr)`
-- `get_url()`
+- `locator(selector)`
+- `click(selector)`
+- `fill(selector, value)`
+- `text(selector)`
+- `attr(selector, attr)`
+- `wait_for_text(text)`
+- `wait_for_selector(selector)`
+- `wait_for_ms(ms)`
 - `eval_js(script)`
 - `screenshot(path=None)`
-- `emit_result(payload)`
-- `stop_session()`
+- Locator object methods:
+- `click()`
+- `fill(value)`
+- `text()`
+- `attr(attr)`
+- `wait_visible()`
 
 ## Artifact Model
 
@@ -218,6 +233,7 @@ Run summary payload:
 ## Operational Notes
 
 - Default mode is Steel cloud unless `--local` or API URL override is supplied.
+- Use `--cloud` to explicitly override `STEEL_MONTY_LOCAL=true` at runtime.
 - Environment and dependencies are managed with `uv`.
 - Recommended run path:
   - `uv sync`

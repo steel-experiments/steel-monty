@@ -78,10 +78,21 @@ export STEEL_MONTY_SOLVE_CAPTCHA=true
 
 or pass `--solve-captcha` on the command line.
 
+Runtime mode override flags:
+
+- Use `--local` to force local Steel mode for a run.
+- Use `--cloud` to force cloud mode even when `STEEL_MONTY_LOCAL=true`.
+
 ## Run
 
 ```bash
 uv run steel-monty-agent "Open example.com and return the page title."
+```
+
+Explicitly force cloud mode:
+
+```bash
+uv run steel-monty-agent --cloud "Open example.com and return the page title."
 ```
 
 ## Persistent Session Showcase
