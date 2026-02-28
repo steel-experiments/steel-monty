@@ -96,6 +96,7 @@ class Settings:
     steel_api_key: str | None
     steel_local: bool
     steel_api_url: str | None
+    steel_solve_captcha: bool
     monty_limits: MontyLimitConfig
 
     @classmethod
@@ -115,6 +116,10 @@ class Settings:
         steel_local = _env_bool(resolved_env.get("STEEL_MONTY_LOCAL"), False)
         steel_api_url = resolved_env.get("STEEL_MONTY_API_URL")
         steel_api_url = steel_api_url.strip() if steel_api_url else None
+        steel_solve_captcha = _env_bool(
+            resolved_env.get("STEEL_MONTY_SOLVE_CAPTCHA"),
+            False,
+        )
 
         artifacts_root_raw = resolved_env.get("STEEL_MONTY_ARTIFACTS_DIR", "artifacts/runs").strip()
         artifacts_root = Path(artifacts_root_raw).expanduser()
@@ -149,5 +154,6 @@ class Settings:
             steel_api_key=steel_api_key,
             steel_local=steel_local,
             steel_api_url=steel_api_url,
+            steel_solve_captcha=steel_solve_captcha,
             monty_limits=monty_limits,
         )

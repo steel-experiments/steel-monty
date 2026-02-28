@@ -67,13 +67,30 @@ export STEEL_MONTY_BROWSER_TIMEOUT_SEC=30
 export STEEL_MONTY_ARTIFACTS_DIR=artifacts/runs
 export STEEL_MONTY_LOCAL=false
 export STEEL_MONTY_API_URL=
+export STEEL_MONTY_SOLVE_CAPTCHA=false
 ```
+
+For sites with production CAPTCHA widgets (like the hCaptcha sample), set:
+
+```bash
+export STEEL_MONTY_SOLVE_CAPTCHA=true
+```
+
+or pass `--solve-captcha` on the command line.
 
 ## Run
 
 ```bash
 uv run steel-monty-agent "Open example.com and return the page title."
 ```
+
+## Persistent Session Showcase
+
+Retries now reuse one Steel browser session for the full run.
+
+- Attempt 2+ can continue from the page state created by prior attempts.
+- Session cleanup happens once at the end of the run.
+- Attempt `result.json` includes `artifacts.session` metadata (session id and resume origin when reused).
 
 ## Object API Shape
 

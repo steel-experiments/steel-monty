@@ -13,6 +13,38 @@ class SteelSDKError(RuntimeError):
     pass
 
 
+def _redact_sensitive_query_values(url: str | None) -> str | None:
+    if not url:
+        return url
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+
+    if not parsed.query:
+        return url
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    changed = False
+    for key in list(query.keys()):
+        normalized = key.strip().lower()
+        if (
+            normalized in {"apikey", "api_key", "token", "access_token", "authorization", "auth", "key"}
+            or "key" in normalized
+            or "token" in normalized
+            or "auth" in normalized
+        ):
+            query[key] = ["REDACTED"]
+            changed = True
+
+    if not changed:
+        return url
+
+    rebuilt = parsed._replace(query=urlencode(query, doseq=True))
+    return urlunparse(rebuilt)
+
+
 @dataclass
 class SessionInfo:
     id: str
@@ -29,6 +61,7 @@ class SteelSDKBrowser:
     local: bool = False
     api_url: str | None = None
     timeout_sec: int = 30
+    solve_captcha: bool = False
 
     def __post_init__(self) -> None:
         self._steel_client: Any | None = None
@@ -37,6 +70,7 @@ class SteelSDKBrowser:
         self._context: Any | None = None
         self._page: Any | None = None
         self._session: Any | None = None
+        self._connect_url: str | None = None
         self._element_refs: dict[str, Any] = {}
 
     def _resolve_base_url(self) -> str | None:
@@ -135,7 +169,9 @@ class SteelSDKBrowser:
                 id=str(getattr(self._session, "id", "") or ""),
                 mode="local" if self.local else "cloud",
                 name=self.session_name or None,
-                connect_url=getattr(self._session, "websocket_url", None),
+                connect_url=_redact_sensitive_query_values(
+                    self._connect_url or getattr(self._session, "websocket_url", None)
+                ),
                 live_url=getattr(self._session, "session_viewer_url", None),
             )
 
@@ -144,6 +180,8 @@ class SteelSDKBrowser:
         create_kwargs: dict[str, Any] = {}
         if self.session_name:
             create_kwargs["namespace"] = self.session_name
+        if self.solve_captcha:
+            create_kwargs["solve_captcha"] = True
 
         session = client.sessions.create(**create_kwargs)
         session_id = str(getattr(session, "id", "") or "")
@@ -180,6 +218,7 @@ class SteelSDKBrowser:
 
             self._page.set_default_timeout(self.timeout_sec * 1000)
             self._session = session
+            self._connect_url = websocket_url
         except Exception as exc:
             if self._browser is not None:
                 try:
@@ -200,18 +239,18 @@ class SteelSDKBrowser:
             self._context = None
             self._page = None
             self._session = None
+            self._connect_url = None
             raise SteelSDKError(f"Failed to attach to Steel session CDP: {exc}") from exc
 
         return SessionInfo(
             id=session_id,
             mode="local" if self.local else "cloud",
             name=self.session_name or None,
-            connect_url=websocket_url,
+            connect_url=_redact_sensitive_query_values(websocket_url),
             live_url=getattr(session, "session_viewer_url", None),
         )
 
-    def stop_session(self, all_sessions: bool = False) -> str:
-        _ = all_sessions
+    def stop_session(self) -> str:
         errors: list[str] = []
         session_id = str(getattr(self._session, "id", "") or "")
 
@@ -237,11 +276,47 @@ class SteelSDKBrowser:
         self._context = None
         self._page = None
         self._session = None
+        self._connect_url = None
         self._element_refs = {}
 
         if errors:
             raise SteelSDKError("; ".join(errors))
         return "session stopped"
+
+    def active_session_info(self) -> SessionInfo | None:
+        if self._session is None:
+            return None
+
+        session_id = str(getattr(self._session, "id", "") or "")
+        if not session_id:
+            return None
+
+        return SessionInfo(
+            id=session_id,
+            mode="local" if self.local else "cloud",
+            name=self.session_name or None,
+            connect_url=_redact_sensitive_query_values(
+                self._connect_url or getattr(self._session, "websocket_url", None)
+            ),
+            live_url=getattr(self._session, "session_viewer_url", None),
+        )
+
+    def current_page_state(self) -> dict[str, str] | None:
+        if self._page is None:
+            return None
+
+        state: dict[str, str] = {}
+        try:
+            state["url"] = str(self._page.url or "")
+        except Exception:
+            state["url"] = ""
+
+        try:
+            state["title"] = str(self._page.title() or "")
+        except Exception:
+            state["title"] = ""
+
+        return state
 
     def open_url(self, url: str) -> str:
         page = self._require_page()

@@ -87,7 +87,6 @@ class _PolicyVisitor(ast.NodeVisitor):
         ast.AsyncFunctionDef,
         ast.With,
         ast.AsyncWith,
-        ast.Try,
         ast.While,
         ast.Await,
         ast.Global,
@@ -146,5 +145,14 @@ class _PolicyVisitor(ast.NodeVisitor):
                 raise PolicyViolation("Dunder call target is not allowed.")
         else:
             raise PolicyViolation("Unsupported callable expression.")
+
+        self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is None:
+            raise PolicyViolation("Bare except is not allowed.")
+
+        if node.body and all(isinstance(stmt, ast.Pass) for stmt in node.body):
+            raise PolicyViolation("except blocks that only pass are not allowed.")
 
         self.generic_visit(node)

@@ -35,14 +35,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=_positive_int,
         help="Override max attempts for this run.",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--local",
-        action="store_true",
+        dest="steel_local",
+        action="store_const",
+        const=True,
         help="Use local Steel mode for this run.",
     )
+    mode_group.add_argument(
+        "--cloud",
+        dest="steel_local",
+        action="store_const",
+        const=False,
+        help="Use Steel cloud mode for this run.",
+    )
+    parser.set_defaults(steel_local=None)
     parser.add_argument(
         "--api-url",
         help="Explicit Steel API URL for this run.",
+    )
+    parser.add_argument(
+        "--solve-captcha",
+        action="store_true",
+        help="Enable Steel session auto CAPTCHA solving.",
     )
     return parser.parse_args(argv)
 
@@ -60,8 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         settings = Settings.from_env()
         orchestrator = Orchestrator(settings).with_overrides(
             max_attempts=args.max_attempts,
-            steel_local=True if args.local else None,
+            steel_local=args.steel_local,
             steel_api_url=args.api_url,
+            steel_solve_captcha=True if args.solve_captcha else None,
         )
         result = orchestrator.run(objective=objective, session_name=args.session)
     except Exception as exc:

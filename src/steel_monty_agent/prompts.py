@@ -13,6 +13,7 @@ Runtime constraints:
 - No class definitions.
 - No async/await.
 - No while loops.
+- try/except is allowed, but never use bare except and never swallow with except: pass.
 - Do not use eval/exec/open/compile/__import__.
 - Keep code short and deterministic.
 
@@ -52,6 +53,7 @@ Required output behavior:
 - Always call emit_result(payload) with a dict payload.
 - Payload should include keys: status, results, evidence, errors, artifacts.
 - Use status="ok" unless the task clearly failed.
+- Do not call browser.close(); host runtime handles session cleanup.
 
 Selector strategy:
 - Prefer page.snapshot(interactive=True) first.
@@ -77,10 +79,19 @@ def build_generation_prompt(
             "Execution requirements:\n"
             "- Start a browser early with start_browser(...).\n"
             "- Perform only needed actions.\n"
-            "- Close the browser with browser.close() before finishing.\n"
+            "- Do not call browser.close(); runtime cleanup is handled by the host.\n"
+            "- If using try/except, catch specific exceptions and include failure details in errors.\n"
             "- Call emit_result(payload) at the end."
         ),
     ]
+
+    if attempt > 1:
+        sections.append(
+            "Retry behavior:\n"
+            "- A browser session may already be active from previous attempts.\n"
+            "- Call start_browser() and continue from current page state when possible.\n"
+            "- Avoid redoing completed steps unless needed."
+        )
 
     if previous_error:
         sections.append(f"Previous attempt error:\n{previous_error.strip()}")

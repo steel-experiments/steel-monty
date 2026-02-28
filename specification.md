@@ -109,7 +109,6 @@ Reject scripts containing:
 - `import` / `from ... import ...`
 - `class` declarations
 - `with` / `async with`
-- `try` blocks
 - `global` / `nonlocal`
 - disallowed names (`eval`, `exec`, `open`, `compile`, `__import__`, etc.)
 
@@ -118,6 +117,7 @@ Additional checks:
 - Max AST node budget.
 - At least one helper API call must be present.
 - Disallow dunder attribute calls.
+- Allow `try/except` only when it catches explicit exception types and does not swallow errors with `except: pass`.
 
 ## 6.2 Monty Guardrails
 

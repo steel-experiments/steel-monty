@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -32,6 +33,23 @@ def _get_bridge(bridge_id: int) -> "BrowserBridge":
     if bridge is None:
         raise RuntimeError("Browser handle is no longer active.")
     return bridge
+
+
+def _redact_sensitive_text(text: str) -> str:
+    redacted = text
+    redacted = re.sub(
+        r"([?&](?:apiKey|apikey|api_key|token|access_token|authorization|auth|key)=)[^&\"'\s]+",
+        r"\1REDACTED",
+        redacted,
+        flags=re.IGNORECASE,
+    )
+    redacted = re.sub(r"\bste-[A-Za-z0-9]{8,}\b", "ste-REDACTED", redacted)
+    redacted = re.sub(
+        r"(?i)(bearer\s+)[A-Za-z0-9._~+/\-=]+",
+        r"\1REDACTED",
+        redacted,
+    )
+    return redacted
 
 
 @dataclass
@@ -147,6 +165,16 @@ class BrowserBridge:
     def __post_init__(self) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
+    def set_run_dir(self, run_dir: Path) -> None:
+        self.run_dir = run_dir
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+    def begin_attempt(self) -> None:
+        self._final_result = None
+
+    def event_count(self) -> int:
+        return len(self._events)
+
     @property
     def final_result(self) -> dict[str, Any] | None:
         return self._final_result
@@ -157,9 +185,6 @@ class BrowserBridge:
             normalized: dict[str, Any] = dict(payload)
         else:
             normalized = {"results": payload}
-
-        status = normalized.get("status")
-        normalized["status"] = status if isinstance(status, str) and status else "ok"
 
         if "results" not in normalized:
             normalized["results"] = []
@@ -172,9 +197,35 @@ class BrowserBridge:
 
         errors = normalized.get("errors")
         if isinstance(errors, list):
-            normalized["errors"] = [str(item) for item in errors]
+            normalized_errors = [str(item) for item in errors]
+        elif errors is None:
+            normalized_errors = []
         else:
-            normalized["errors"] = []
+            normalized_errors = [str(errors)]
+
+        status = normalized.get("status")
+        if isinstance(status, str):
+            normalized_status = status.strip().lower()
+        else:
+            normalized_status = ""
+
+        status_contract_error: str | None = None
+        if normalized_status in {"ok", "success", "passed", "pass"}:
+            normalized["status"] = "ok"
+        elif normalized_status in {"failed", "error", "fail", "failure"}:
+            normalized["status"] = "failed"
+        elif normalized_status:
+            normalized["status"] = "failed"
+            status_contract_error = (
+                f"Invalid status value: {status!r}. Expected one of: ok, failed."
+            )
+        else:
+            normalized["status"] = "failed"
+            status_contract_error = "Missing required status key."
+
+        if status_contract_error and status_contract_error not in normalized_errors:
+            normalized_errors.append(status_contract_error)
+        normalized["errors"] = normalized_errors
 
         artifacts = normalized.get("artifacts")
         if not isinstance(artifacts, dict):
@@ -184,17 +235,39 @@ class BrowserBridge:
         return normalized
 
     def _record(self, action: str, args: dict[str, Any], result_preview: str | None = None) -> None:
+        sanitized_preview = _redact_sensitive_text(result_preview) if result_preview else None
         self._events.append(
             BridgeEvent(
                 ts=_utc_now_iso(),
                 action=action,
                 args=args,
-                result_preview=result_preview[:800] if result_preview else None,
+                result_preview=sanitized_preview[:800] if sanitized_preview else None,
             )
         )
 
     def last_observation(self) -> str | None:
         return self._last_observation
+
+    def retry_observation_hint(self) -> str | None:
+        parts: list[str] = []
+        page_state = self.backend.current_page_state()
+        if page_state:
+            url = page_state.get("url", "").strip()
+            title = page_state.get("title", "").strip()
+            if url:
+                parts.append(f"Current URL: {url}")
+            if title:
+                parts.append(f"Current title: {title}")
+
+        if self._last_observation:
+            parts.append(f"Latest snapshot excerpt:\n{self._last_observation[:1500]}")
+
+        if not parts:
+            return None
+        return "\n".join(parts)
+
+    def active_session_info(self) -> SessionInfo | None:
+        return self.backend.active_session_info()
 
     def start_browser(
         self,
@@ -238,7 +311,7 @@ class BrowserBridge:
             self._record("stop_browser", {"skipped": True}, "session_not_started")
             return {"ok": True, "stopped": False}
 
-        output = self.backend.stop_session(all_sessions=False)
+        output = self.backend.stop_session()
         self._session_started = False
         self._record("stop_browser", {"skipped": False}, output)
         return {"ok": True, "stopped": True, "output": output}
@@ -310,13 +383,20 @@ class BrowserBridge:
         return output
 
     def screenshot(self, path: str | None = None) -> str:
+        run_dir_resolved = self.run_dir.resolve()
         if path:
             screenshot_path = Path(path)
             if not screenshot_path.is_absolute():
-                screenshot_path = self.run_dir / screenshot_path
+                screenshot_path = run_dir_resolved / screenshot_path
         else:
             self._screenshot_counter += 1
-            screenshot_path = self.run_dir / f"screenshot_{self._screenshot_counter:02d}.png"
+            screenshot_path = run_dir_resolved / f"screenshot_{self._screenshot_counter:02d}.png"
+
+        screenshot_path = screenshot_path.resolve()
+        try:
+            screenshot_path.relative_to(run_dir_resolved)
+        except ValueError as exc:
+            raise ValueError("screenshot path must stay within the attempt artifacts directory.") from exc
 
         output = self.backend.screenshot(str(screenshot_path))
         self._record("screenshot", {"path": str(screenshot_path)}, output)
@@ -334,6 +414,7 @@ class BrowserBridge:
             "emit_result": self.emit_result,
         }
 
-    def dump_events(self, path: Path) -> None:
-        serializable = [event.to_dict() for event in self._events]
+    def dump_events(self, path: Path, start_index: int = 0) -> None:
+        start = max(0, min(start_index, len(self._events)))
+        serializable = [event.to_dict() for event in self._events[start:]]
         path.write_text(json.dumps(serializable, indent=2, ensure_ascii=True), encoding="utf-8")
