@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steel-monty-agent"
+version = "0.1.0"
+description = "Minimal LLM + Monty + Steel browser orchestration"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "anthropic>=0.40.0",
+  "pydantic-monty>=0.0.7",
+  "steel-sdk>=0.16.0",
+  "playwright>=1.48.0",
+]
+
+[project.scripts]
+steel-monty-agent = "steel_monty_agent.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SteelMontyRunResult",
+  "type": "object",
+  "required": ["status", "results", "evidence", "errors", "artifacts"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "failed"]
+    },
+    "results": {},
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
